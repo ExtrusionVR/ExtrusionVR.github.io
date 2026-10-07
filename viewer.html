@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Viewer - Biopolymer Extrusion VR Lab</title>
+<link rel="stylesheet" href="lab.css">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+<!-- visit counter (GoatCounter, no cookies, no personal data). Set GC_CODE to the site code. -->
+<script data-goatcounter="https://GC_CODE.goatcounter.com/count" async src="vendor/goatcounter-count.js"></script>
+</head>
+<body class="viewer">
+<header class="bar">
+  <a class="back" href="index.html">&larr; Lab</a>
+  <h1 id="title">Loading...</h1>
+  <button id="play">Pause</button>
+  <button id="view">View: full</button>
+  <button id="reset">Reset view</button>
+  <label>Speed <select id="speed"><option value="0">0.25x</option><option value="1">0.5x</option>
+    <option value="2" selected>1x</option><option value="3">2x</option></select></label>
+  <label>Detail <select id="detail"><option value="low">low</option><option value="medium" selected>medium</option>
+    <option value="high">high</option></select></label>
+  <input id="slider" type="range" min="0" max="0" value="0" aria-label="Time">
+  <span id="time"></span>
+  <div class="legend-box" title="Drag the two handles to choose the range of values you see">
+    <canvas id="legend" width="230" height="52"></canvas>
+    <div class="dual">
+      <input id="rlo" type="range" min="0" max="255" value="0" aria-label="Colour range minimum">
+      <input id="rhi" type="range" min="0" max="255" value="255" aria-label="Colour range maximum">
+    </div>
+  </div>
+  <label class="rhide"><input id="rhide" type="checkbox" checked> Hide outside range</label>
+  <button id="rfull">Full range</button>
+  <button id="info-btn" aria-expanded="true" aria-controls="info">What am I looking at?</button>
+  <span id="status" class="status"></span>
+</header>
+<aside id="info" class="info">
+  <button id="info-close" class="info-close" aria-label="Close">&times;</button>
+  <h2 id="info-title"></h2>
+  <p id="info-bn" class="bn"></p>
+  <p id="info-about"></p>
+  <h3>Colours</h3>
+  <p id="info-colours"></p>
+  <p id="info-glossary" class="muted"></p>
+  <h2 class="info-sub">Controls</h2>
+  <div id="info-controls"></div>
+</aside>
+<div id="canvas-host"></div>
+<div id="vr-host"></div>
+<div id="mode-badge" class="mode-badge" hidden></div>
+<script type="module" src="js/viewer.js"></script>
+</body>
+</html>

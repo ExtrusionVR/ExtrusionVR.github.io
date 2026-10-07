@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Biopolymer Extrusion VR Lab</title>
+<link rel="stylesheet" href="lab.css">
+<!-- visit counter (GoatCounter, no cookies, no personal data). Set GC_CODE to the site code. -->
+<script data-goatcounter="https://GC_CODE.goatcounter.com/count" async src="vendor/goatcounter-count.js"></script>
+</head>
+<body class="lab">
+<header class="hero">
+  <h1>Biopolymer Extrusion VR Lab</h1>
+  <p id="intro">Granular-flow simulations to explore in 3D or walk around in VR. Pick a model.</p>
+  <p id="glossary" class="muted glossary"></p>
+</header>
+<main>
+  <section id="models" class="grid" aria-live="polite"><p class="muted">Loading models...</p></section>
+  <section class="help">
+    <h2>Controls</h2>
+    <div id="controls"></div>
+    <p class="muted">Playback is 24 snapshots per second (5 ms of simulation each), the same pace as the videos.
+      Models load while they play.</p>
+    <p class="muted"><a id="forget" href="#">Forget the passphrase on this device</a></p>
+  </section>
+</main>
+<script type="module">
+import { getJSON, getImageURL, forget } from './js/vault.js';
+import { detectDevice, renderControls, bnHTML, BN_GLOSSARY } from './js/controls.js';
+const host = document.getElementById('models');
+detectDevice().then((dev) => {
+  renderControls(document.getElementById('controls'), dev);
+  document.getElementById('intro').innerHTML = dev.vr
+    ? 'Granular-flow simulations to walk around in. Pick a model, then press <b>Enter VR</b>.'
+    : 'Granular-flow simulations to explore in 3D. Pick a model, then drag to look around. '
+      + 'On a VR headset (e.g. Meta Quest) open this page in the headset\'s browser to step inside.';
+});
+try {
+  const models = await getJSON('models/index.json');
+  host.innerHTML = '';
+  if (models.some((m) => bnHTML(m))) document.getElementById('glossary').innerHTML = BN_GLOSSARY;
+  for (const m of models) {
+    const a = document.createElement('a');
+    a.className = 'card';
+    a.href = `viewer.html?m=${encodeURIComponent(m.id)}`;
+    a.innerHTML = `<img alt=""><div class="card-body"><h2></h2><p class="bn"></p><p class="desc"></p>
+      <p class="muted"><span class="run"></span>${m.duration.toFixed(2)} s simulated &middot; ${m.frames} frames &middot;
+      up to ${m.max_particles.toLocaleString()} particles &middot; ${Math.round(m.size_mb)} MB</p></div>`;
+    a.querySelector('h2').textContent = m.title;
+    const bn = bnHTML(m);
+    if (bn) a.querySelector('.bn').innerHTML = bn; else a.querySelector('.bn').remove();
+    a.querySelector('.desc').textContent = m.description;
+    if (m.run) a.querySelector('.run').textContent = `${m.run} · `;
+    host.appendChild(a);
+    if (m.thumb) getImageURL(m.thumb).then((u) => { a.querySelector('img').src = u; }).catch(() => {});
+  }
+} catch (e) {
+  host.innerHTML = '';
+  const p = document.createElement('p');
+  p.textContent = `Could not load the model list: ${e.message}`;
+  host.appendChild(p);
+}
+document.getElementById('forget').onclick = (e) => { e.preventDefault(); forget(); location.reload(); };
+</script>
+</body>
+</html>

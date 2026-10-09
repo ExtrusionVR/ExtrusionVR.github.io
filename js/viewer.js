@@ -1,10 +1,12 @@
 // Biopolymer Extrusion VR Lab - WebXR viewer for granular-flow simulations exported by the tools/export_*_web.py converters.
-// Desktop: orbit with the mouse, buttons in the top bar, keys Space play, C cut view, R reset view, arrows step.
+// Desktop: orbit with the mouse, buttons in the top bar, keys Space play, C cut view, R reset view, arrows step,
+//   [ / ] move the cut plane (cut view only, or drag the Cut position slider).
 // Touch: one finger rotate, pinch zoom, two fingers pan. Headset (Quest browser): Enter VR, then
-//   right trigger  play / pause            left trigger   top view <-> cross-section (z = 40 mm)
+//   right trigger  play / pause            left trigger   top view <-> cross-section (slice through the powder)
 //   one grip       grab and move model     both grips     scale (pull apart / together) and move
-//   right stick    scrub (left / right)    A              reset model position and size
-//   B              speed 0.25x/0.5x/1x/2x  X              particle detail low / medium / high
+//   right stick    scrub (left / right)    left stick     move the cut plane (cut view only)
+//   A              reset model position and size           B    speed 0.25x/0.5x/1x/2x
+//   X              particle detail low / medium / high (use low if motion stutters)
 //   Y              exit VR (back to the page)
 import * as THREE from 'three';
 import { OrbitControls } from '../vendor/addons/OrbitControls.js';
@@ -27,12 +29,13 @@ const ui = {
   legend: document.getElementById('legend'), rlo: document.getElementById('rlo'), rhi: document.getElementById('rhi'),
   rhide: document.getElementById('rhide'), rfull: document.getElementById('rfull'), reset: document.getElementById('reset'),
   info: document.getElementById('info'), infoBtn: document.getElementById('info-btn'),
+  cutbox: document.getElementById('cutbox'), cutpos: document.getElementById('cutpos'), cutval: document.getElementById('cutval'),
 };
 
 // ---------------------------------------------------------------- state
 const state = {
   meta: null, entry: {}, frames: [], loadedFrames: 0, frame: 0, framePos: 0, playing: true,
-  speedIdx: 2, section: false, detail: 'medium', dirty: true,
+  speedIdx: 2, section: false, detail: 'medium', dirty: true, cutPos: 0,   // cut-plane z, user-movable in cut view
   rng: { full: [0, 255], cut: [0, 255] },   // particle-speed colour range in stored units (0..255), per view
   hideOutside: true,                        // hide particles outside the colour range (else clamp their colour)
 };
@@ -64,7 +67,7 @@ orbit.enableDamping = true;
 const model = new THREE.Group();          // everything in GF coordinates (metres, y up)
 scene.add(model);
 
-const clipLocal = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);   // keeps z <= zslice (set later)
+const clipLocal = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);   // keeps z <= cutPos (constant kept in sync with it)
 const clipWorld = new THREE.Plane();
 
 // ---------------------------------------------------------------- helpers
@@ -158,8 +161,8 @@ function showFrame(k) {
   const M = state.meta, F = state.frames[k];
   if (!F || !particles) return;
   const lo = M.box_lo, sp = [0, 1, 2].map((a) => (M.box_hi[a] - lo[a]) / 65535), sm = M.semi_max / 255;
-  const col = particles.instanceColor.array, zs = M.zslice, zh = M.zhalf;
-  const half = M.section_mode === 'half';    // 'half': keep z <= zslice (open the bed); default: thin slab
+  const col = particles.instanceColor.array, zs = state.cutPos, zh = M.zhalf;
+  const half = M.section_mode === 'half';    // 'half': keep z <= cutPos (open the bed); default: thin slab centred on cutPos
   const [rlo, rhi] = curRange(), span = Math.max(1, rhi - rlo), hide = state.hideOutside;
   let j = 0;
   for (let i = 0; i < F.n; i++) {
@@ -196,8 +199,24 @@ function setSection(on) {
   screwMat.clippingPlanes = on && state.meta?.section_clip_objects !== false ? [clipWorld] : [];
   barrelMat.needsUpdate = screwMat.needsUpdate = true;
   ui.view.textContent = on ? `View: ${sectionLabel()}` : 'View: full';
+  ui.cutbox.hidden = !on;
   if (!renderer.xr.isPresenting && state.meta) resetView();   // desktop: look straight at the cut / back to the overview
   syncRange();
+  showColours();
+  state.dirty = true;
+}
+
+function cutBounds() {                        // [lo, hi] the cut plane can move within, in GF metres (z)
+  const M = state.meta;
+  return [M.box_lo[2], M.box_hi[2]];
+}
+function setCutPos(z) {                        // move the cut plane (slab centre / half-cut threshold)
+  const [lo, hi] = cutBounds();
+  state.cutPos = Math.min(hi, Math.max(lo, z));
+  clipLocal.constant = state.cutPos;
+  ui.cutpos.value = state.cutPos;
+  ui.cutval.textContent = `${Math.round(state.cutPos * 1000)} mm`;
+  if (state.section) { ui.view.textContent = `View: ${sectionLabel()}`; showColours(); }
   state.dirty = true;
 }
 
@@ -212,13 +231,14 @@ function resetView() {                         // desktop: overview, or straight
   if (!state.section) { placeDesktop(); return; }
   const c = modelCentre(), M = state.meta;
   const h = Math.max(M.box_hi[0] - M.box_lo[0], M.box_hi[1] - M.box_lo[1]);
-  orbit.target.set(c.x, c.y, M.zslice);
-  camera.position.set(c.x, c.y, M.zslice + 1.4 * h);
+  orbit.target.set(c.x, c.y, state.cutPos);
+  camera.position.set(c.x, c.y, state.cutPos + 1.4 * h);
   orbit.update();
 }
 
 function sectionLabel() {
-  return state.meta?.section_label || `cross-section z = ${Math.round((state.meta?.zslice ?? 0.04) * 1000)} mm`;
+  const base = state.meta?.section_label || 'cross-section';
+  return `${base} (z = ${Math.round(state.cutPos * 1000)} mm)`;
 }
 
 // ---------------------------------------------------------------- legend + headset wrist panel
@@ -260,7 +280,8 @@ function showColours() {                       // the info panel's plain-languag
     + `are ${state.hideOutside ? 'shown' : 'spread over the colour bar'}.`;
   el.textContent = (state.section
     ? `Cut view (${sectionLabel()}): each particle is coloured by its speed - blue = slow, red = fast (full scale: `
-      + `0 to ${M.vmax} m/s or faster). Only particles in the cut are shown.`
+      + `0 to ${M.vmax} m/s or faster). Only particles in the cut are shown. Drag the Cut position slider `
+      + '(or the left stick in VR) to move the cut through the model.'
     : `Each small shape is one simulated powder particle, coloured by its speed: blue = slow, red = fast (full scale: `
       + `0 to ${M.vmax} m/s or faster). The grey parts are the moving equipment (screws or blade); `
       + 'the see-through shell is the housing. Press the view button for a cut through the powder.') + range
@@ -301,7 +322,7 @@ function drawWrist() {
   const M = state.meta;
   if (!M) return;
   const t = M.times[state.frame] ?? 0, L = legendText();
-  const key = `${state.frame}|${state.playing}|${state.section}|${state.speedIdx}|${state.detail}|${state.loadedFrames}|${curRange()}|${state.hideOutside}`;
+  const key = `${state.frame}|${state.playing}|${state.section}|${state.speedIdx}|${state.detail}|${state.loadedFrames}|${curRange()}|${state.hideOutside}|${state.cutPos}`;
   if (key === wristKey) return;
   wristKey = key;
   const ctx = wristCanvas.getContext('2d');
@@ -435,6 +456,11 @@ function pollButtons(dt) {
         buildParticles(); syncUI();
       }
       if (edge(5)) renderer.xr.getSession()?.end();                             // Y: exit VR
+      const y = gp.axes[3] || 0;                                                // stick: move the cut plane
+      if (state.section && Math.abs(y) > 0.25) {
+        const [lo, hi] = cutBounds();
+        setCutPos(state.cutPos - y * (hi - lo) * 0.3 * dt);
+      }
     }
     prevButtons[hand] = pressed;
   }
@@ -459,6 +485,7 @@ ui.rlo.oninput = () => onRange('lo');
 ui.rhi.oninput = () => onRange('hi');
 ui.rhide.onchange = () => { state.hideOutside = ui.rhide.checked; syncRange(); state.dirty = true; };
 ui.rfull.onclick = () => { const r = curRange(); r[0] = 0; r[1] = 255; syncRange(); state.dirty = true; };
+ui.cutpos.oninput = () => setCutPos(+ui.cutpos.value);
 for (const b of document.querySelectorAll('.bar button')) b.addEventListener('click', () => b.blur());   // keep Space for play
 function setInfo(open) {
   ui.info.hidden = !open;
@@ -475,7 +502,10 @@ window.addEventListener('keydown', (e) => {   // desktop shortcuts
   if (k === ' ') togglePlay();
   else if (k === 'c') setSection(!state.section);
   else if (k === 'r') resetView();
-  else if (k === 'arrowleft' || k === 'arrowright') {
+  else if ((k === '[' || k === ']') && state.section) {
+    const [lo, hi] = cutBounds();
+    setCutPos(state.cutPos + (k === ']' ? 1 : -1) * (hi - lo) / 100);
+  } else if (k === 'arrowleft' || k === 'arrowright') {
     state.playing = false; syncUI();
     state.framePos = Math.floor(state.framePos);
     scrub(k === 'arrowright' ? 1 : -1);
@@ -543,14 +573,16 @@ async function main() {
   const about = document.getElementById('info-about');   // plain text from the model list, BN_PP -> BN with subscript
   about.textContent = E.about || E.description || M.description || '';
   about.innerHTML = about.innerHTML.replace(/BN_(PP|PW)/g, 'BN<sub>$1</sub>');
-  showColours();
-  clipLocal.constant = M.zslice;
   ui.slider.max = M.nframes - 1;
+  const [zlo, zhi] = cutBounds();
+  ui.cutpos.min = zlo; ui.cutpos.max = zhi; ui.cutpos.step = (zhi - zlo) / 400;
+  setCutPos(params.has('cut') ? +params.get('cut') / 1000 : M.zslice);   // ?cut=MM: start the cut plane here
   if (params.has('range')) {                   // ?range=LO,HI: start with this particle-speed range [m/s]
     const [a, b] = params.get('range').split(',').map(Number);
     const code = (v) => Math.round(Math.min(255, Math.max(0, v / M.vmax * 255)));
     if (b > a) { state.rng.full = [code(a), code(b)]; state.rng.cut = [code(a), code(b)]; }
   }
+  showColours();
   syncRange(); syncUI();
 
   barrel = new THREE.Mesh(meshFromBin(await getFile(BASE + M.barrel)), barrelMat);

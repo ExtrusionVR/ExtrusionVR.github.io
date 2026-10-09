@@ -32,6 +32,9 @@
   </div>
   <label class="rhide"><input id="rhide" type="checkbox" checked> Hide outside range</label>
   <button id="rfull">Full range</button>
+  <label id="cutbox" class="cutbox" hidden title="Drag to move the cut plane through the model">Cut position
+    <input id="cutpos" type="range" min="0" max="1" step="0.001" value="0" aria-label="Cut plane position">
+    <span id="cutval"></span></label>
   <button id="info-btn" aria-expanded="true" aria-controls="info">What am I looking at?</button>
   <span id="status" class="status"></span>
 </header>

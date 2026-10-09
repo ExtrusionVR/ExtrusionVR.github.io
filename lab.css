@@ -55,6 +55,9 @@ body.viewer { overflow: hidden; }
   background: #fff; border: 2px solid #15171c; cursor: ew-resize; box-sizing: border-box; }
 .dual input:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--accent); }
 .bar .rhide { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.cutbox { display: flex; align-items: center; gap: 6px; }
+.cutbox input { accent-color: var(--accent); width: 110px; }
+.cutbox span { font-variant-numeric: tabular-nums; min-width: 48px; }
 .bn { margin: 0 0 6px; color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
 .glossary { margin-top: 6px !important; max-width: 760px; font-size: 0.95rem !important; }
 .help h3 { margin: 18px 0 6px; font-size: 1.05rem; }

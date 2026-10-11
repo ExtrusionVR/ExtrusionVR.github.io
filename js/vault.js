@@ -4,6 +4,10 @@
 // Without crypto.json (local laptop
 // server) files are fetched as they are. The derived key can be remembered on the device (localStorage).
 
+// Encrypted model files (everything under models/ except crypto.json) are served from Cloudflare R2, because the
+// GitHub Pages site is limited to 1 GB. Needs a CORS rule on the bucket for this site's origin. '' = same site.
+const DATA_BASE = 'https://pub-bc38a4b78e1841e0b6e2b58e7d5de078.r2.dev/';
+
 let mode = null;          // 'plain' | 'encrypted'
 let keyPromise = null;
 
@@ -118,7 +122,7 @@ export async function getFile(path, onProgress) {
   await init();
   if (mode === 'plain') return download(path, onProgress);
   const key = await keyPromise;
-  const buf = new Uint8Array(await download(path + '.enc', onProgress));
+  const buf = new Uint8Array(await download(DATA_BASE + path + '.enc', onProgress));
   return crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.slice(0, 12) }, key, buf.subarray(12));
 }
 

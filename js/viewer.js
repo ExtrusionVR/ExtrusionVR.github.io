@@ -27,7 +27,7 @@ const ui = {
   speed: document.getElementById('speed'), detail: document.getElementById('detail'),
   slider: document.getElementById('slider'), time: document.getElementById('time'),
   legend: document.getElementById('legend'), rlo: document.getElementById('rlo'), rhi: document.getElementById('rhi'),
-  rhide: document.getElementById('rhide'), rfull: document.getElementById('rfull'), reset: document.getElementById('reset'),
+  water: document.getElementById('water'), rhide: document.getElementById('rhide'), rfull: document.getElementById('rfull'), reset: document.getElementById('reset'),
   info: document.getElementById('info'), infoBtn: document.getElementById('info-btn'),
   cutbox: document.getElementById('cutbox'), cutpos: document.getElementById('cutpos'), cutval: document.getElementById('cutval'),
 };
@@ -37,6 +37,7 @@ const state = {
   meta: null, entry: {}, frames: [], loadedFrames: 0, frame: 0, framePos: 0, playing: true,
   speedIdx: 2, section: false, detail: 'medium', dirty: true, cutPos: 0,   // cut-plane z, user-movable in cut view
   rng: { full: [0, 255], cut: [0, 255] },   // particle-speed colour range in stored units (0..255), per view
+  showWater: true,
   hideOutside: true,                        // hide particles outside the colour range (else clamp their colour)
 };
 const curRange = () => (state.section ? state.rng.cut : state.rng.full);
@@ -118,7 +119,7 @@ function meshFromBin(buf) {
 }
 
 const pad4 = (n) => (n + 3) & ~3;
-function parseChunk(buf) {                  // -> [{n, pos:Uint16Array, quat:Int8Array, semi, speed, vy}]
+function parseChunk(buf, hasWater) {         // -> [{n, pos:Uint16Array, quat:Int8Array, semi, speed, vy, nw, wpos}]
   const dv = new DataView(buf), nf = dv.getUint32(0, true), out = [];
   let o = 4;
   for (let f = 0; f < nf; f++) {
@@ -128,7 +129,9 @@ function parseChunk(buf) {                  // -> [{n, pos:Uint16Array, quat:Int
     const semi = new Uint8Array(buf, o, 3 * n); o += pad4(3 * n);
     const speed = new Uint8Array(buf, o, n); o += pad4(n);
     const vy = new Int8Array(buf, o, n); o += pad4(n);
-    out.push({ n, pos, quat, semi, speed, vy });
+    let nw = 0, wpos = null;
+    if (hasWater) { nw = dv.getUint32(o, true); o += 4; wpos = new Uint16Array(buf, o, 3 * nw); o += pad4(6 * nw); }
+    out.push({ n, pos, quat, semi, speed, vy, nw, wpos });
   }
   return out;
 }
@@ -141,6 +144,10 @@ const barrelMat = new THREE.MeshStandardMaterial({ color: 0xcfd0d6, roughness: 0
 const screwMat = new THREE.MeshStandardMaterial({ color: 0xdedfe4, roughness: 0.35, metalness: 0.15,
   side: THREE.DoubleSide });
 const partMat = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0.05 });
+const waterMat = new THREE.MeshStandardMaterial({ color: 0x3d8bf2, roughness: 0.15, metalness: 0.0 });
+let water = null;                          // SPH water: one small solid per point (instance matrices written directly)
+const WATER_GEO = { low: () => new THREE.TetrahedronGeometry(0.5), medium: () => new THREE.OctahedronGeometry(0.5),
+  high: () => new THREE.IcosahedronGeometry(0.5, 0) };
 
 function buildParticles() {
   if (particles) { model.remove(particles); particles.geometry.dispose(); particles.dispose(); }
@@ -153,7 +160,20 @@ function buildParticles() {
   particles.frustumCulled = false;
   particles.count = 0;
   model.add(particles);
+  buildWater();
   state.dirty = true;
+}
+function buildWater() {
+  if (water) { model.remove(water); water.geometry.dispose(); water.dispose(); water = null; }
+  if (!state.meta.water) return;
+  const maxW = Math.max(...state.meta.water_counts, 1);
+  waterMat.color.set(state.meta.water.colour || '#cfe8ff');
+  water = new THREE.InstancedMesh(WATER_GEO[state.detail](), waterMat, maxW);
+  water.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  water.frustumCulled = false;
+  water.count = 0;
+  water.visible = state.showWater;
+  model.add(water);
 }
 
 const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
@@ -177,6 +197,20 @@ function showFrame(k) {
     const c = Math.min(255, Math.max(0, Math.round((raw - rlo) * 255 / span)));   // colours stretched over the range
     col[3 * j] = LUT[3 * c]; col[3 * j + 1] = LUT[3 * c + 1]; col[3 * j + 2] = LUT[3 * c + 2];
     j++;
+  }
+  if (water) {
+    const A = water.instanceMatrix.array, d = M.water.size;
+    let w = 0;
+    for (let i = 0; i < F.nw; i++) {
+      const z = lo[2] + F.wpos[3 * i + 2] * sp[2];
+      if (state.section && (half ? z > zs : Math.abs(z - zs) > zh)) continue;
+      const o = 16 * w++;
+      A[o] = d; A[o + 1] = 0; A[o + 2] = 0; A[o + 3] = 0; A[o + 4] = 0; A[o + 5] = d; A[o + 6] = 0; A[o + 7] = 0;
+      A[o + 8] = 0; A[o + 9] = 0; A[o + 10] = d; A[o + 11] = 0;
+      A[o + 12] = lo[0] + F.wpos[3 * i] * sp[0]; A[o + 13] = lo[1] + F.wpos[3 * i + 1] * sp[1]; A[o + 14] = z; A[o + 15] = 1;
+    }
+    water.count = w;
+    water.instanceMatrix.needsUpdate = true;
   }
   particles.count = j;
   particles.instanceMatrix.needsUpdate = true;
@@ -282,7 +316,8 @@ function showColours() {                       // the info panel's plain-languag
     : `Each small shape is one simulated powder particle, coloured by its speed: blue = slow, red = fast (full scale: `
       + `0 to ${M.vmax} m/s or faster). The grey parts are the moving equipment (screws or blade); `
       + 'the see-through shell is the housing. Press the view button for a cut through the powder.') + range
-    + ' Drag the two handles on the colour bar to pick a speed range.';
+    + ' Drag the two handles on the colour bar to pick a speed range.'
+    + (M.water ? ' The small pale-blue dots are the water (SPH points), not coloured by speed; the Water button hides them.' : '');
 }
 const BAR_X = 5;                               // bar inset = half the slider handle width, so handles sit on the ends
 function drawLegend() {
@@ -478,6 +513,12 @@ function syncUI() {
 ui.play.onclick = togglePlay;
 ui.view.onclick = () => setSection(!state.section);
 ui.reset.onclick = resetView;
+function toggleWater() {
+  state.showWater = !state.showWater;
+  if (water) water.visible = state.showWater;
+  ui.water.textContent = `Water: ${state.showWater ? 'on' : 'off'}`;
+}
+ui.water.onclick = toggleWater;
 ui.rlo.oninput = () => onRange('lo');
 ui.rhi.oninput = () => onRange('hi');
 ui.rhide.onchange = () => { state.hideOutside = ui.rhide.checked; syncRange(); state.dirty = true; };
@@ -499,6 +540,7 @@ window.addEventListener('keydown', (e) => {   // desktop shortcuts
   if (k === ' ') togglePlay();
   else if (k === 'c') setSection(!state.section);
   else if (k === 'r') resetView();
+  else if (k === 'w' && state.meta?.water) toggleWater();
   else if ((k === '[' || k === ']') && state.section) {
     const [lo, hi] = cutBounds();
     setCutPos(state.cutPos + (k === ']' ? 1 : -1) * (hi - lo) / 100);
@@ -570,6 +612,7 @@ async function main() {
   const about = document.getElementById('info-about');   // plain text from the model list, BN_PP -> BN with subscript
   about.textContent = E.about || E.description || M.description || '';
   about.innerHTML = about.innerHTML.replace(/BN_(PP|PW)/g, 'BN<sub>$1</sub>');
+  ui.water.hidden = !M.water;
   ui.slider.max = M.nframes - 1;
   const [zlo, zhi] = cutBounds();
   ui.cutpos.min = zlo; ui.cutpos.max = zhi; ui.cutpos.step = (zhi - zlo) / 400;
@@ -616,7 +659,7 @@ async function main() {
       const frac = total ? got / total : 0;
       ui.status.textContent = `Loading ${Math.round(100 * (c + frac) / M.nchunks)} %`;
     });
-    state.frames.push(...parseChunk(buf));
+    state.frames.push(...parseChunk(buf, !!M.water));
     state.loadedFrames = state.frames.length;
     const want = params.has('frame') ? Math.min(+params.get('frame'), M.nframes - 1) : -1;
     if (want >= 0 && want < state.loadedFrames && !state.jumped) {   // ?frame=K: open paused on frame K

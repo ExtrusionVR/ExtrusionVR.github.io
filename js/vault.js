@@ -4,9 +4,9 @@
 // Without crypto.json (local laptop
 // server) files are fetched as they are. The derived key can be remembered on the device (localStorage).
 
-// Encrypted model files (everything under models/ except crypto.json) are served from Cloudflare R2, because the
-// GitHub Pages site is limited to 1 GB. Needs a CORS rule on the bucket for this site's origin. '' = same site.
-const DATA_BASE = 'https://pub-bc38a4b78e1841e0b6e2b58e7d5de078.r2.dev/';
+// Encrypted model files (everything under models/ except crypto.json) are served from a private Cloudflare R2
+// bucket through a Worker (C:\VR\r2worker), because the GitHub Pages site is limited to 1 GB. '' = same site.
+const DATA_BASE = 'https://extrusionvr-data.bolonyoketa13.workers.dev/';
 
 let mode = null;          // 'plain' | 'encrypted'
 let keyPromise = null;
@@ -98,9 +98,20 @@ function askPassphrase(info) {
   });
 }
 
-async function download(url, onProgress) {
+// Bearer token for the data Worker: HMAC-SHA256(key, 'vrlab-r2-auth') in hex. Derived from the passphrase key, so
+// the Worker only serves visitors who know the passphrase (it stores just a hash of this token).
+async function authToken(key) {
+  const hk = await crypto.subtle.importKey('raw', await crypto.subtle.exportKey('raw', key),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', hk, new TextEncoder().encode('vrlab-r2-auth')));
+  return Array.from(sig, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function download(url, onProgress, token) {
   // small list/info files are revalidated every time, so a new upload shows at once (GitHub caches 10 min)
-  const r = await fetch(url, /\.json(\.enc)?$/.test(url) ? { cache: 'no-cache' } : {});
+  const opt = /\.json(\.enc)?$/.test(url) ? { cache: 'no-cache' } : {};
+  if (token) opt.headers = { Authorization: `Bearer ${token}` };
+  const r = await fetch(url, opt);
   if (!r.ok) throw new Error(`${url}: ${r.status}`);
   if (!onProgress || !r.body) return r.arrayBuffer();
   const total = +r.headers.get('Content-Length') || 0, reader = r.body.getReader(), parts = [];
@@ -122,7 +133,7 @@ export async function getFile(path, onProgress) {
   await init();
   if (mode === 'plain') return download(path, onProgress);
   const key = await keyPromise;
-  const buf = new Uint8Array(await download(DATA_BASE + path + '.enc', onProgress));
+  const buf = new Uint8Array(await download(DATA_BASE + path + '.enc', onProgress, DATA_BASE ? await authToken(key) : null));
   return crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.slice(0, 12) }, key, buf.subarray(12));
 }
 

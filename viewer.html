@@ -18,7 +18,17 @@
   <button id="view">View: full</button>
   <button id="reset">Reset view</button>
   <button id="water" hidden>Water: on</button>
-  <button id="water" hidden>Water: on</button>
+  <div id="wbox" class="wbox" hidden>
+    <button id="wcolor" title="Colour the water by its speed, or show it plain pale blue">Water colour: speed</button>
+    <div class="legend-box" title="Drag the two handles to show only the water in a speed range">
+      <canvas id="wlegend" width="230" height="52"></canvas>
+      <div class="dual">
+        <input id="wlo" type="range" min="0" max="255" value="0" aria-label="Water speed minimum">
+        <input id="whi" type="range" min="0" max="255" value="255" aria-label="Water speed maximum">
+      </div>
+    </div>
+    <button id="wfull" title="Show all the water">All water</button>
+  </div>
   <label>Speed <select id="speed"><option value="0">0.25x</option><option value="1">0.5x</option>
     <option value="2" selected>1x</option><option value="3">2x</option></select></label>
   <label>Detail <select id="detail"><option value="low">low</option><option value="medium" selected>medium</option>

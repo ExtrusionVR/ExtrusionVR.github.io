@@ -27,7 +27,8 @@ const ui = {
   speed: document.getElementById('speed'), detail: document.getElementById('detail'),
   slider: document.getElementById('slider'), time: document.getElementById('time'),
   legend: document.getElementById('legend'), rlo: document.getElementById('rlo'), rhi: document.getElementById('rhi'),
-  water: document.getElementById('water'), rhide: document.getElementById('rhide'), rfull: document.getElementById('rfull'), reset: document.getElementById('reset'),
+  water: document.getElementById('water'), wbox: document.getElementById('wbox'), wcolor: document.getElementById('wcolor'),
+  wlegend: document.getElementById('wlegend'), wlo: document.getElementById('wlo'), whi: document.getElementById('whi'), wfull: document.getElementById('wfull'), rhide: document.getElementById('rhide'), rfull: document.getElementById('rfull'), reset: document.getElementById('reset'),
   info: document.getElementById('info'), infoBtn: document.getElementById('info-btn'),
   cutbox: document.getElementById('cutbox'), cutpos: document.getElementById('cutpos'), cutval: document.getElementById('cutval'),
 };
@@ -38,6 +39,8 @@ const state = {
   speedIdx: 2, section: false, detail: 'medium', dirty: true, cutPos: 0,   // cut-plane z, user-movable in cut view
   rng: { full: [0, 255], cut: [0, 255] },   // particle-speed colour range in stored units (0..255), per view
   showWater: true,
+  wRng: [0, 255],                           // water-speed filter range in stored units (0..255)
+  wColour: true,                            // water coloured by speed (else plain pale blue)
   hideOutside: true,                        // hide particles outside the colour range (else clamp their colour)
 };
 const curRange = () => (state.section ? state.rng.cut : state.rng.full);
@@ -86,6 +89,22 @@ function lut(n) {                          // linear-space RGB of the jet map (i
   return out;
 }
 const LUT = lut(256);
+function wramp(t) {                          // water speed: pale lavender -> magenta -> indigo (the powder uses blue-red)
+  const S = [[0, [0.93, 0.86, 1.0]], [0.5, [0.86, 0.12, 0.72]], [1, [0.18, 0.0, 0.42]]];
+  const i = t < 0.5 ? 0 : 1, f = (t - S[i][0]) / (S[i + 1][0] - S[i][0]);
+  return S[i][1].map((v, k) => v + (S[i + 1][1][k] - v) * f);
+}
+function wlut(n) {
+  const out = new Float32Array(3 * n), col = new THREE.Color();
+  for (let i = 0; i < n; i++) {
+    const [r, g, b] = wramp(i / (n - 1));
+    col.setRGB(r, g, b, THREE.SRGBColorSpace);
+    out.set([col.r, col.g, col.b], 3 * i);
+  }
+  return out;
+}
+const WLUT = wlut(256);
+const WPLAIN = new THREE.Color('#cfe8ff');   // water colour when not coloured by speed
 
 function superquadric(n, segU, segV) {     // |x|^n + |y|^n + |z|^n = 1, unit semi-axes
   const e = 2 / n, sp = (v, p) => Math.sign(v) * Math.pow(Math.abs(v), p);
@@ -119,7 +138,7 @@ function meshFromBin(buf) {
 }
 
 const pad4 = (n) => (n + 3) & ~3;
-function parseChunk(buf, hasWater) {         // -> [{n, pos:Uint16Array, quat:Int8Array, semi, speed, vy, nw, wpos}]
+function parseChunk(buf, hasWater, hasWSpeed) {   // -> [{n, pos:Uint16Array, quat:Int8Array, semi, speed, vy, nw, wpos, wspd}]
   const dv = new DataView(buf), nf = dv.getUint32(0, true), out = [];
   let o = 4;
   for (let f = 0; f < nf; f++) {
@@ -129,9 +148,12 @@ function parseChunk(buf, hasWater) {         // -> [{n, pos:Uint16Array, quat:In
     const semi = new Uint8Array(buf, o, 3 * n); o += pad4(3 * n);
     const speed = new Uint8Array(buf, o, n); o += pad4(n);
     const vy = new Int8Array(buf, o, n); o += pad4(n);
-    let nw = 0, wpos = null;
-    if (hasWater) { nw = dv.getUint32(o, true); o += 4; wpos = new Uint16Array(buf, o, 3 * nw); o += pad4(6 * nw); }
-    out.push({ n, pos, quat, semi, speed, vy, nw, wpos });
+    let nw = 0, wpos = null, wspd = null;
+    if (hasWater) {
+      nw = dv.getUint32(o, true); o += 4; wpos = new Uint16Array(buf, o, 3 * nw); o += pad4(6 * nw);
+      if (hasWSpeed) { wspd = new Uint8Array(buf, o, nw); o += pad4(nw); }
+    }
+    out.push({ n, pos, quat, semi, speed, vy, nw, wpos, wspd });
   }
   return out;
 }
@@ -144,7 +166,7 @@ const barrelMat = new THREE.MeshStandardMaterial({ color: 0xcfd0d6, roughness: 0
 const screwMat = new THREE.MeshStandardMaterial({ color: 0xdedfe4, roughness: 0.35, metalness: 0.15,
   side: THREE.DoubleSide });
 const partMat = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0.05 });
-const waterMat = new THREE.MeshStandardMaterial({ color: 0x3d8bf2, roughness: 0.15, metalness: 0.0 });
+const waterMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0.0 });   // colour comes from the instance colours
 let water = null;                          // SPH water: one small solid per point (instance matrices written directly)
 const WATER_GEO = { low: () => new THREE.TetrahedronGeometry(0.5), medium: () => new THREE.OctahedronGeometry(0.5),
   high: () => new THREE.IcosahedronGeometry(0.5, 0) };
@@ -167,8 +189,10 @@ function buildWater() {
   if (water) { model.remove(water); water.geometry.dispose(); water.dispose(); water = null; }
   if (!state.meta.water) return;
   const maxW = Math.max(...state.meta.water_counts, 1);
-  waterMat.color.set(state.meta.water.colour || '#cfe8ff');
+  WPLAIN.set(state.meta.water.colour || '#cfe8ff');
   water = new THREE.InstancedMesh(WATER_GEO[state.detail](), waterMat, maxW);
+  water.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(3 * maxW), 3);
+  water.instanceColor.setUsage(THREE.DynamicDrawUsage);
   water.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   water.frustumCulled = false;
   water.count = 0;
@@ -199,11 +223,18 @@ function showFrame(k) {
     j++;
   }
   if (water) {
-    const A = water.instanceMatrix.array, d = M.water.size;
+    const A = water.instanceMatrix.array, WC = water.instanceColor.array, d = M.water.size;
+    const hasS = !!F.wspd, [wlo, whi] = state.wRng, wspan = Math.max(1, whi - wlo), byS = hasS && state.wColour;
     let w = 0;
     for (let i = 0; i < F.nw; i++) {
       const z = lo[2] + F.wpos[3 * i + 2] * sp[2];
       if (state.section && (half ? z > zs : Math.abs(z - zs) > zh)) continue;
+      const raw = hasS ? F.wspd[i] : 0;            // water speed filter: only points inside the chosen range are shown
+      if (hasS && (raw < wlo || raw > whi)) continue;
+      if (byS) {
+        const c = Math.min(255, Math.max(0, Math.round((raw - wlo) * 255 / wspan)));   // colours stretched over the range
+        WC[3 * w] = WLUT[3 * c]; WC[3 * w + 1] = WLUT[3 * c + 1]; WC[3 * w + 2] = WLUT[3 * c + 2];
+      } else { WC[3 * w] = WPLAIN.r; WC[3 * w + 1] = WPLAIN.g; WC[3 * w + 2] = WPLAIN.b; }
       const o = 16 * w++;
       A[o] = d; A[o + 1] = 0; A[o + 2] = 0; A[o + 3] = 0; A[o + 4] = 0; A[o + 5] = d; A[o + 6] = 0; A[o + 7] = 0;
       A[o + 8] = 0; A[o + 9] = 0; A[o + 10] = d; A[o + 11] = 0;
@@ -211,6 +242,7 @@ function showFrame(k) {
     }
     water.count = w;
     water.instanceMatrix.needsUpdate = true;
+    water.instanceColor.needsUpdate = true;
   }
   particles.count = j;
   particles.instanceMatrix.needsUpdate = true;
@@ -317,7 +349,11 @@ function showColours() {                       // the info panel's plain-languag
       + `0 to ${M.vmax} m/s or faster). The grey parts are the moving equipment (screws or blade); `
       + 'the see-through shell is the housing. Press the view button for a cut through the powder.') + range
     + ' Drag the two handles on the colour bar to pick a speed range.'
-    + (M.water ? ' The small pale-blue dots are the water (SPH points), not coloured by speed; the Water button hides them.' : '');
+    + (M.water ? (M.water.speed
+      ? ' The small dots are the water (SPH points), coloured by their own speed: light lavender = slow, magenta = medium, '
+        + `dark indigo = fast (full scale 0 to ${M.water.vmax} m/s). Use the Water speed bar to show only water in a speed range; `
+        + 'the Water colour button switches to plain pale blue, and the Water button hides it.'
+      : ' The small pale-blue dots are the water (SPH points), not coloured by speed; the Water button hides them.') : '');
 }
 const BAR_X = 5;                               // bar inset = half the slider handle width, so handles sit on the ends
 function drawLegend() {
@@ -339,6 +375,37 @@ function onRange(which) {
   if (lo > hi - 3) { if (which === 'lo') lo = hi - 3; else hi = lo + 3; }
   const r = curRange(); r[0] = Math.max(0, lo); r[1] = Math.min(255, hi);
   syncRange(); state.dirty = true;
+}
+
+// water-speed bar (own scale, purple) with the same two-handle range filter as the powder bar
+const wFmt = (code) => fmt(code / 255 * state.meta.water.vmax);
+function drawWLegend() {
+  const M = state.meta;
+  if (!M?.water?.speed) return;
+  const c = ui.wlegend, ctx = c.getContext('2d'), [lo, hi] = state.wRng, span = Math.max(1, hi - lo), w = c.width - 2 * BAR_X;
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#e8e9ee'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('Water speed (m/s)', 0, 13);
+  for (let i = 0; i < w; i++) {
+    const code = 255 * i / (w - 1);
+    const rgb = (code < lo || code > hi) ? [0.27, 0.28, 0.31]
+      : (state.wColour ? wramp(Math.min(1, Math.max(0, (code - lo) / span))) : [0.81, 0.91, 1]);
+    ctx.fillStyle = `rgb(${255 * rgb[0]},${255 * rgb[1]},${255 * rgb[2]})`;
+    ctx.fillRect(BAR_X + i, 20, 1, 12);
+  }
+  ctx.fillStyle = '#e8e9ee';
+  drawTicks(ctx, BAR_X, w, 48, { lo: wFmt(lo), hi: wFmt(hi) + (hi === 255 ? '+' : ''), loFrac: lo / 255, hiFrac: hi / 255 });
+}
+function syncWRange() {
+  ui.wlo.value = state.wRng[0]; ui.whi.value = state.wRng[1];
+  ui.wcolor.textContent = `Water colour: ${state.wColour ? 'speed' : 'plain'}`;
+  drawWLegend(); showColours();
+}
+function onWRange(which) {
+  let lo = +ui.wlo.value, hi = +ui.whi.value;
+  if (lo > hi - 3) { if (which === 'lo') lo = hi - 3; else hi = lo + 3; }
+  state.wRng = [Math.max(0, lo), Math.min(255, hi)];
+  syncWRange(); state.dirty = true;
 }
 
 const wristCanvas = document.createElement('canvas');
@@ -519,6 +586,10 @@ function toggleWater() {
   ui.water.textContent = `Water: ${state.showWater ? 'on' : 'off'}`;
 }
 ui.water.onclick = toggleWater;
+ui.wlo.oninput = () => onWRange('lo');
+ui.whi.oninput = () => onWRange('hi');
+ui.wfull.onclick = () => { state.wRng = [0, 255]; syncWRange(); state.dirty = true; };
+ui.wcolor.onclick = () => { state.wColour = !state.wColour; syncWRange(); state.dirty = true; };
 ui.rlo.oninput = () => onRange('lo');
 ui.rhi.oninput = () => onRange('hi');
 ui.rhide.onchange = () => { state.hideOutside = ui.rhide.checked; syncRange(); state.dirty = true; };
@@ -613,6 +684,14 @@ async function main() {
   about.textContent = E.about || E.description || M.description || '';
   about.innerHTML = about.innerHTML.replace(/BN_(PP|PW)/g, 'BN<sub>$1</sub>');
   ui.water.hidden = !M.water;
+  ui.wbox.hidden = !(M.water && M.water.speed);
+  if (params.has('wrange') && M.water?.speed) {   // ?wrange=LO,HI: start with this water-speed range [m/s]
+    const [a, b] = params.get('wrange').split(',').map(Number);
+    const code = (v) => Math.round(Math.min(255, Math.max(0, v / M.water.vmax * 255)));
+    if (b > a) state.wRng = [code(a), code(b)];
+  }
+  if (params.get('wplain') === '1') state.wColour = false;
+  syncWRange();
   ui.slider.max = M.nframes - 1;
   const [zlo, zhi] = cutBounds();
   ui.cutpos.min = zlo; ui.cutpos.max = zhi; ui.cutpos.step = (zhi - zlo) / 400;
@@ -659,7 +738,7 @@ async function main() {
       const frac = total ? got / total : 0;
       ui.status.textContent = `Loading ${Math.round(100 * (c + frac) / M.nchunks)} %`;
     });
-    state.frames.push(...parseChunk(buf, !!M.water));
+    state.frames.push(...parseChunk(buf, !!M.water, !!M.water?.speed));
     state.loadedFrames = state.frames.length;
     const want = params.has('frame') ? Math.min(+params.get('frame'), M.nframes - 1) : -1;
     if (want >= 0 && want < state.loadedFrames && !state.jumped) {   // ?frame=K: open paused on frame K
